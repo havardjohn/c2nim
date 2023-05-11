@@ -657,7 +657,7 @@ proc optScope(p: var Parser, n: PNode; kind: TSymKind): PNode =
             result.sons[0] = mangledIdent(p.tok.s, p, kind)
       getTok(p, result)
 
-proc parseTypeSuffix(p: var Parser, typ: PNode, isParam: bool = false): PNode
+proc parseTypeSuffix(p: var Parser, typ: PNode, isParam: bool = false, extraPragmas: PNode = nil): PNode
 proc parseTemplateParamType(p: var Parser): PNode =
   result = typeDesc(p)
   result = parseTypeSuffix(p, result)
@@ -836,7 +836,7 @@ proc addDiscardable(origName: string; pragmas: PNode; p: Parser) =
 
 proc parseFormalParams(p: var Parser, params, pragmas: PNode)
 
-proc parseTypeSuffix(p: var Parser, typ: PNode, isParam: bool = false): PNode =
+proc parseTypeSuffix(p: var Parser, typ: PNode, isParam: bool = false, extraPragmas: PNode = nil): PNode =
   result = typ
 
   let isBlock = nfBlockPtr in typ.flags
@@ -875,6 +875,9 @@ proc parseTypeSuffix(p: var Parser, typ: PNode, isParam: bool = false): PNode =
     var pragmas = newProcPragmas(p)
     var params = newNodeP(nkFormalParams, p)
     discard addReturnType(params, result)
+    if not extraPragmas.isNil:
+      for pragma in extraPragmas:
+        addSon(pragmas, pragma)
     saveContextB(p)
     try:
       parseFormalParams(p, params, pragmas)
@@ -909,13 +912,18 @@ proc abstractDeclarator(p: var Parser, a: PNode): PNode =
 
 proc typeName(p: var Parser): PNode = abstractDeclarator(p, typeAtom(p))
 
-proc parseField(p: var Parser, kind: TNodeKind; pointers: var int): PNode =
+proc parseCallConv(p: var Parser, pragmas: PNode)
+
+proc parseField(p: var Parser, kind: TNodeKind; pointers: var int, pragmas: var PNode): PNode =
   if p.tok.xkind == pxParLe:
     getTok(p, nil)
+    if p.tok.xkind != pxStar:
+      pragmas = p.newProcPragmas
+      p.parseCallConv(pragmas)
     while p.tok.xkind == pxStar:
       getTok(p, nil)
       inc pointers
-    result = parseField(p, kind, pointers)
+    result = parseField(p, kind, pointers, pragmas)
     eat(p, pxParRi, result)
   else:
     expectIdent(p)
@@ -1082,8 +1090,9 @@ proc parseStructBody(p: var Parser, stmtList: PNode,
       var def = newNodeP(nkIdentDefs, p)
       var t = pointer(p, baseTyp)
       var fieldPointers = 0
-      var i = parseField(p, kind, fieldPointers)
-      t = pointersOf(p, parseTypeSuffix(p, t), fieldPointers)
+      var pragmas: PNode
+      var i = parseField(p, kind, fieldPointers, pragmas)
+      t = pointersOf(p, parseTypeSuffix(p, t, extraPragmas = pragmas), fieldPointers)
       i = parseBitfield(p, i)
       addSon(def, i, t, emptyNode)
       addSon(result, def)
@@ -3362,7 +3371,8 @@ proc parseClassEntity(p: var Parser; genericParams: PNode; private: bool): PNode
           origName = p.tok.s
 
         var fieldPointers = 0
-        var i = parseField(p, nkRecList, fieldPointers)
+        var tmpPragmas: PNode
+        var i = parseField(p, nkRecList, fieldPointers, tmpPragmas)
         if origName.len > 0 and p.tok.xkind == pxParLe:
           let meth = parseMethod(p, origName, t, pragmas, isStatic, false,
                                  gp, genericParams)
